@@ -116,7 +116,7 @@ jobs:
                 loop: "{{ range(1, vm_count + 1) | list }}"
 
               - name: Configure VMs via SSH
-                hosts: rdp_vms
+                delegate_to: "{{ item }}"
                 become: yes
                 vars:
                   ansible_ssh_user: "{{ ssh_user }}"
@@ -253,3 +253,18 @@ jobs:
           PROXMOX_NODE: ${{ secrets.PROXMOX_NODE }}
           PROXMOX_API_TOKEN_ID: ${{ secrets.PROXMOX_API_TOKEN_ID }}
           PROXMOX_API_TOKEN_SECRET: ${{ secrets.PROXMOX_API_TOKEN_SECRET }}
+
+      - name: Display SSH Access Information
+        run: |
+          echo "=== SSH ACCESS INFORMATION ==="
+          echo "Proxmox Host IP: ${{ secrets.PROXMOX_HOST_IP }}"
+          echo "Username: root"
+          echo "Password: ${{ secrets.PROXMOX_ROOT_PASSWORD }}"
+          echo ""
+          echo "VM SSH Credentials:"
+          echo "Username: debian"
+          echo "Password: SecurePass123!"
+          echo "Root Password: RootSecurePass123!"
+          echo ""
+          echo "VMs will be accessible via Tailscale network."
+          echo "=================================="
