@@ -16,6 +16,7 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y ansible
+          ansible-galaxy collection install community.proxmox
 
       - name: Run Ansible Playbook
         run: |
@@ -60,7 +61,7 @@ jobs:
                 failed_when: proxmox_auth.status != 200
 
               - name: Create {{ vm_count }} Debian VMs
-                community.general.proxmox_kvm:
+                community.proxmox.vm:
                   api_host: "{{ ansible_host }}"
                   api_user: "{{ proxmox_api_user }}"
                   api_token_id: "{{ proxmox_api_token_id | default(omit) }}"
@@ -89,7 +90,7 @@ jobs:
                 register: vm_creation
 
               - name: Start the VMs
-                community.general.proxmox_kvm:
+                community.proxmox.vm:
                   api_host: "{{ ansible_host }}"
                   api_user: "{{ proxmox_api_user }}"
                   api_token_id: "{{ proxmox_api_token_id | default(omit) }}"
@@ -105,7 +106,7 @@ jobs:
                   seconds: 120  # Increased wait time
 
               - name: Gather VM IPs
-                community.general.proxmox_kvm:
+                community.proxmox.vm:
                   api_host: "{{ ansible_host }}"
                   api_user: "{{ proxmox_api_user }}"
                   api_token_id: "{{ proxmox_api_token_id | default(omit) }}"
@@ -119,7 +120,7 @@ jobs:
               - name: Add VMs to inventory
                 add_host:
                   hostname: "{{ vm_prefix }}-{{ item }}"
-                  ansible_host: "{{ vm_info.results[item-1].vm.net0.macaddr | default('') }}"  # This might need adjustment
+                  ansible_host: "{{ vm_info.results[item-1].vm.net0.ip | default('') }}"  # Use IP address from DHCP
                   groups: rdp_vms
                 loop: "{{ range(1, vm_count + 1) | list }}"
 
