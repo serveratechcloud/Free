@@ -122,6 +122,7 @@ jobs:
                   ansible_ssh_user: "{{ ssh_user }}"
                   ansible_ssh_pass: "{{ rdp_password }}"
                   ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
+                loop: "{{ range(1, vm_count + 1) | list }}"
                 tasks:
                   - name: Wait for SSH to be available
                     wait_for:
