@@ -21,217 +21,87 @@ jobs:
         run: |
           cat > playbook.yml << 'EOF'
           ---
-          - name: Create and Configure RDP VMs on Proxmox VE
+          - name: Install Proxmox VE 8.4
             hosts: proxmox_host
             become: yes
             vars:
               tailscale_auth_key: "tskey-auth-kbUdFxeubs11CNTRL-NHrJK32vtphPF6rRH3gHqhQ1fkwv9GaqF"
-              vm_template: "debian-12-generic-amd64"
-              vm_count: 2
-              vm_prefix: "rdp-vm"
-              vm_memory: 2048
-              vm_cores: 2
-              vm_disk_size: "20G"
-              bridge: "vmbr0"
-              ssh_user: "debian"
-              rdp_user: "rdp"
-              rdp_password: "SecurePass123!"
               root_password: "RootSecurePass123!"
 
             tasks:
-              - name: Ensure Proxmox API is accessible
-                uri:
-                  url: "https://{{ ansible_host }}:8006/api2/json/access/ticket"
-                  method: POST
-                  body_format: form-urlencoded
-                  body:
-                    username: "{{ proxmox_api_user }}"
-                    password: "{{ proxmox_api_password }}"
-                  validate_certs: no
-                register: proxmox_auth
-                failed_when: proxmox_auth.status != 200
+              - name: Update system
+                apt:
+                  update_cache: yes
+                  upgrade: yes
 
-              - name: Create {{ vm_count }} Debian VMs
-                proxmox_kvm:
-                  api_host: "{{ ansible_host }}"
-                  api_user: "{{ proxmox_api_user }}"
-                  api_token_id: "{{ proxmox_api_token_id | default(omit) }}"
-                  api_token_secret: "{{ proxmox_api_token_secret | default(omit) }}"
-                  api_password: "{{ proxmox_api_password }}"
-                  node: "{{ proxmox_node }}"
-                  name: "{{ vm_prefix }}-{{ item }}"
-                  vmid: "{{ 100 + item }}"
-                  clone: "{{ vm_template }}"
-                  full: yes
-                  memory: "{{ vm_memory }}"
-                  cores: "{{ vm_cores }}"
-                  disk:
-                    size: "{{ vm_disk_size }}"
-                  net:
-                    net0: "virtio,bridge={{ bridge }}"
-                  ciuser: "{{ ssh_user }}"
-                  cipassword: "{{ rdp_password }}"
-                  sshkeys: "{{ lookup('file', '~/.ssh/id_rsa.pub') }}"
-                  ipconfig:
-                    ipconfig0: "ip=dhcp"
-                  nameserver: "8.8.8.8"
-                  searchdomain: "local"
-                  onboot: yes
-                loop: "{{ range(1, vm_count + 1) | list }}"
-                register: vm_creation
+              - name: Install required packages for Proxmox
+                apt:
+                  name:
+                    - curl
+                    - wget
+                    - gnupg
+                    - openssh-server
+                  state: present
 
-              - name: Start the VMs
-                proxmox_kvm:
-                  api_host: "{{ ansible_host }}"
-                  api_user: "{{ proxmox_api_user }}"
-                  api_token_id: "{{ proxmox_api_token_id | default(omit) }}"
-                  api_token_secret: "{{ proxmox_api_token_secret | default(omit) }}"
-                  api_password: "{{ proxmox_api_password }}"
-                  node: "{{ proxmox_node }}"
-                  name: "{{ vm_prefix }}-{{ item }}"
-                  state: started
-                loop: "{{ range(1, vm_count + 1) | list }}"
+              - name: Add Proxmox repository key
+                shell: |
+                  wget -O- "http://download.proxmox.com/debian/proxmox-release-bookworm.gpg" | apt-key add -
 
-              - name: Wait for VMs to boot and get IP
-                pause:
-                  seconds: 120
+              - name: Add Proxmox repository
+                lineinfile:
+                  path: /etc/apt/sources.list.d/pve-install-repo.list
+                  line: "deb http://download.proxmox.com/debian/pve bookworm pve-no-subscription"
+                  create: yes
 
-              - name: Gather VM IPs
-                proxmox_kvm:
-                  api_host: "{{ ansible_host }}"
-                  api_user: "{{ proxmox_api_user }}"
-                  api_token_id: "{{ proxmox_api_token_id | default(omit) }}"
-                  api_token_secret: "{{ proxmox_api_token_secret | default(omit) }}"
-                  api_password: "{{ proxmox_api_password }}"
-                  node: "{{ proxmox_node }}"
-                  name: "{{ vm_prefix }}-{{ item }}"
-                register: vm_info
-                loop: "{{ range(1, vm_count + 1) | list }}"
+              - name: Update package list
+                apt:
+                  update_cache: yes
 
-              - name: Add VMs to inventory
-                add_host:
-                  hostname: "{{ vm_prefix }}-{{ item }}"
-                  ansible_host: "{{ vm_info.results[item-1].vm.net0.macaddr | default('') }}"
-                  groups: rdp_vms
-                loop: "{{ range(1, vm_count + 1) | list }}"
+              - name: Install Proxmox VE
+                apt:
+                  name: proxmox-ve
+                  state: present
 
-              - name: Configure VMs via SSH
-                delegate_to: "{{ item }}"
+              - name: Install postfix (required for Proxmox)
+                apt:
+                  name: postfix
+                  state: present
+
+              - name: Set root password
+                user:
+                  name: root
+                  password: "{{ root_password | password_hash('sha512') }}"
+
+              - name: Install Tailscale
+                shell: |
+                  curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.gpg | apt-key add -
+                  curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.list | tee /etc/apt/sources.list.d/tailscale.list
+                  apt update
+                  apt install -y tailscale
+                register: tailscale_install
+                retries: 3
+                delay: 10
+                until: tailscale_install.rc == 0
+
+              - name: Start Tailscale
+                shell: |
+                  tailscale up --authkey={{ tailscale_auth_key }} --hostname=proxmox-host
                 become: yes
-                vars:
-                  ansible_ssh_user: "{{ ssh_user }}"
-                  ansible_ssh_pass: "{{ rdp_password }}"
-                  ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
-                loop: "{{ range(1, vm_count + 1) | list }}"
-                tasks:
-                  - name: Wait for SSH to be available
-                    wait_for:
-                      host: "{{ ansible_host }}"
-                      port: 22
-                      timeout: 300
+                register: tailscale_up
+                retries: 3
+                delay: 10
+                until: tailscale_up.rc == 0
 
-                  - name: Update and upgrade system
-                    apt:
-                      update_cache: yes
-                      upgrade: yes
+              - name: Enable Tailscale to start on boot
+                systemd:
+                  name: tailscaled
+                  enabled: yes
 
-                  - name: Install required packages
-                    apt:
-                      name:
-                        - xrdp
-                        - xfce4
-                        - xfce4-goodies
-                        - tightvncserver
-                        - curl
-                        - wget
-                        - gnupg
-                        - openssh-server
-                      state: present
-
-                  - name: Configure xrdp
-                    lineinfile:
-                      path: /etc/xrdp/xrdp.ini
-                      regexp: '^port=3389'
-                      line: 'port=3389'
-                    notify: restart xrdp
-
-                  - name: Create RDP user
-                    user:
-                      name: "{{ rdp_user }}"
-                      password: "{{ rdp_password | password_hash('sha512') }}"
-                      groups: sudo
-                      shell: /bin/bash
-
-                  - name: Set root password
-                    user:
-                      name: root
-                      password: "{{ root_password | password_hash('sha512') }}"
-
-                  - name: Install Tailscale
-                    shell: |
-                      curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.gpg | sudo apt-key add -
-                      curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.list | sudo tee /etc/apt/sources.list.d/tailscale.list
-                      apt update
-                      apt install -y tailscale
-                    register: tailscale_install
-                    retries: 3
-                    delay: 10
-                    until: tailscale_install.rc == 0
-
-                  - name: Start Tailscale
-                    shell: |
-                      tailscale up --authkey={{ tailscale_auth_key }} --hostname=rdp-vm-{{ inventory_hostname }}
-                    become: yes
-                    register: tailscale_up
-                    retries: 3
-                    delay: 10
-                    until: tailscale_up.rc == 0
-
-                  - name: Create systemd service for continuous RDP monitoring
-                    copy:
-                      dest: /etc/systemd/system/rdp-monitor.service
-                      content: |
-                        [Unit]
-                        Description=RDP Monitor Service
-                        After=network.target tailscaled.service
-
-                        [Service]
-                        ExecStart=/bin/bash -c 'while true; do echo "[$(date)] RDP Active on {{ inventory_hostname }}"; sleep 300; done'
-                        Restart=always
-                        RestartSec=5
-                        User={{ rdp_user }}
-
-                        [Install]
-                        WantedBy=multi-user.target
-
-                  - name: Enable Tailscale to start on boot
-                    systemd:
-                      name: tailscaled
-                      enabled: yes
-
-                  - name: Enable and start RDP monitor service
-                    systemd:
-                      name: rdp-monitor
-                      enabled: yes
-                      state: started
-
-                  - name: Enable and start xrdp
-                    systemd:
-                      name: xrdp
-                      enabled: yes
-                      state: started
-
-                  - name: Enable SSH
-                    systemd:
-                      name: ssh
-                      enabled: yes
-                      state: started
-
-                handlers:
-                  - name: restart xrdp
-                    systemd:
-                      name: xrdp
-                      state: restarted
+              - name: Enable SSH
+                systemd:
+                  name: ssh
+                  enabled: yes
+                  state: started
           EOF
 
       - name: Create Inventory
@@ -262,10 +132,5 @@ jobs:
           echo "Username: root"
           echo "Password: ${{ secrets.PROXMOX_ROOT_PASSWORD }}"
           echo ""
-          echo "VM SSH Credentials:"
-          echo "Username: debian"
-          echo "Password: SecurePass123!"
-          echo "Root Password: RootSecurePass123!"
-          echo ""
-          echo "VMs will be accessible via Tailscale network."
+          echo "Proxmox will be accessible via Tailscale network."
           echo "=================================="
