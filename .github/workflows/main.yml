@@ -22,7 +22,7 @@ jobs:
         run: |
           cat > inventory.ini << 'EOF'
           [proxmox_host]
-          your-proxmox-host ansible_host=100.83.164.24 ansible_user=root
+          your-proxmox-host ansible_host=your-proxmox-host ansible_user=root
 
           [rdp_vms]
           # VMs will be added dynamically
@@ -30,150 +30,56 @@ jobs:
 
           ansible-playbook -i inventory.ini /dev/stdin << 'EOF'
           ---
-          - name: Create and Configure RDP VMs on Proxmox VE
+          - name: Install Proxmox VE 8.4
             hosts: proxmox_host
             become: yes
             vars:
               tailscale_auth_key: "tskey-auth-kbUdFxeubs11CNTRL-NHrJK32vtphPF6rRH3gHqhQ1fkwv9GaqF"
-              vm_template: "debian-12-generic-amd64"  # Assuming a Debian 12 cloud-init template exists
-              vm_count: 2
-              vm_prefix: "rdp-vm"
-              vm_memory: 2048
-              vm_cores: 2
-              vm_disk_size: "20G"
-              bridge: "vmbr0"  # Adjust to your bridged interface for public IP
-              ssh_user: "debian"
-              rdp_user: "rdp"
-              rdp_password: "SecurePass123!"  # Generate securely in production
-              root_password: "RootSecurePass123!"  # Root password
+              root_password: "RootSecurePass123!"
 
             tasks:
-              - name: Ensure Proxmox API is accessible
-                uri:
-                  url: "https://{{ ansible_host }}:8006/api2/json/access/ticket"
-                  method: POST
-                  body_format: form-urlencoded
-                  body:
-                    username: "{{ proxmox_api_user }}"
-                    password: "{{ proxmox_api_password }}"
-                  validate_certs: no
-                register: proxmox_auth
-                failed_when: proxmox_auth.status != 200
-
-              - name: Create {{ vm_count }} Debian VMs
-                community.proxmox.vm:
-                  api_host: "{{ ansible_host }}"
-                  api_user: "{{ proxmox_api_user }}"
-                  api_token_id: "{{ proxmox_api_token_id | default(omit) }}"
-                  api_token_secret: "{{ proxmox_api_token_secret | default(omit) }}"
-                  api_password: "{{ proxmox_api_password }}"
-                  node: "{{ proxmox_node }}"
-                  name: "{{ vm_prefix }}-{{ item }}"
-                  vmid: "{{ 100 + item }}"
-                  clone: "{{ vm_template }}"
-                  full: yes
-                  memory: "{{ vm_memory }}"
-                  cores: "{{ vm_cores }}"
-                  disk:
-                    size: "{{ vm_disk_size }}"
-                  net:
-                    net0: "virtio,bridge={{ bridge }}"
-                  ciuser: "{{ ssh_user }}"
-                  cipassword: "{{ rdp_password }}"  # Initial password, will be changed
-                  sshkeys: "{{ lookup('file', '~/.ssh/id_rsa.pub') }}"  # Add your SSH key
-                  ipconfig:
-                    ipconfig0: "ip=dhcp"  # DHCP for public IP
-                  nameserver: "8.8.8.8"
-                  searchdomain: "local"
-                  onboot: yes  # Ensure VMs start automatically on Proxmox boot
-                loop: "{{ range(1, vm_count + 1) | list }}"
-                register: vm_creation
-
-              - name: Start the VMs
-                community.proxmox.vm:
-                  api_host: "{{ ansible_host }}"
-                  api_user: "{{ proxmox_api_user }}"
-                  api_token_id: "{{ proxmox_api_token_id | default(omit) }}"
-                  api_token_secret: "{{ proxmox_api_token_secret | default(omit) }}"
-                  api_password: "{{ proxmox_api_password }}"
-                  node: "{{ proxmox_node }}"
-                  name: "{{ vm_prefix }}-{{ item }}"
-                  state: started
-                loop: "{{ range(1, vm_count + 1) | list }}"
-
-              - name: Wait for VMs to boot and get IP
-                pause:
-                  seconds: 120  # Increased wait time
-
-              - name: Gather VM IPs
-                community.proxmox.vm:
-                  api_host: "{{ ansible_host }}"
-                  api_user: "{{ proxmox_api_user }}"
-                  api_token_id: "{{ proxmox_api_token_id | default(omit) }}"
-                  api_token_secret: "{{ proxmox_api_token_secret | default(omit) }}"
-                  api_password: "{{ proxmox_api_password }}"
-                  node: "{{ proxmox_node }}"
-                  name: "{{ vm_prefix }}-{{ item }}"
-                register: vm_info
-                loop: "{{ range(1, vm_count + 1) | list }}"
-
-              - name: Add VMs to inventory
-                add_host:
-                  hostname: "{{ vm_prefix }}-{{ item }}"
-                  ansible_host: "{{ vm_info.results[item-1].vm.net0.ip | default('') }}"  # Use IP address from DHCP
-                  groups: rdp_vms
-                loop: "{{ range(1, vm_count + 1) | list }}"
-
-          - name: Configure VMs via SSH
-            hosts: rdp_vms
-            become: yes
-            vars:
-              ansible_ssh_user: "{{ hostvars['your-proxmox-host']['ssh_user'] }}"
-              ansible_ssh_pass: "{{ hostvars['your-proxmox-host']['rdp_password'] }}"
-              ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
-            tasks:
-              - name: Wait for SSH to be available
-                wait_for:
-                  host: "{{ ansible_host }}"
-                  port: 22
-                  timeout: 300
-
-              - name: Update and upgrade system
+              - name: Update system
                 apt:
                   update_cache: yes
                   upgrade: yes
 
-              - name: Install required packages
+              - name: Install required packages for Proxmox
                 apt:
                   name:
-                    - xrdp
-                    - xfce4
-                    - xfce4-goodies
-                    - tightvncserver
                     - curl
                     - wget
                     - gnupg
                     - openssh-server
                   state: present
 
-              - name: Configure xrdp
-                lineinfile:
-                  path: /etc/xrdp/xrdp.ini
-                  regexp: '^port=3389'
-                  line: 'port=3389'
-                notify: restart xrdp
+              - name: Add Proxmox repository key
+                shell: |
+                  wget -O- "http://download.proxmox.com/debian/proxmox-release-bookworm.gpg" | apt-key add -
 
-              - name: Create RDP user
-                user:
-                  name: "{{ hostvars['your-proxmox-host']['rdp_user'] }}"
-                  password: "{{ hostvars['your-proxmox-host']['rdp_password'] | password_hash('sha512') }}"
-                  groups: sudo
-                  shell: /bin/bash
+              - name: Add Proxmox repository
+                lineinfile:
+                  path: /etc/apt/sources.list.d/pve-install-repo.list
+                  line: "deb http://download.proxmox.com/debian/pve bookworm pve-no-subscription"
+                  create: yes
+
+              - name: Update package list
+                apt:
+                  update_cache: yes
+
+              - name: Install Proxmox VE
+                apt:
+                  name: proxmox-ve
+                  state: present
+
+              - name: Install postfix (required for Proxmox)
+                apt:
+                  name: postfix
+                  state: present
 
               - name: Set root password
                 user:
                   name: root
-                  password: "{{ hostvars['your-proxmox-host']['root_password'] | password_hash('sha512') }}"
+                  password: "{{ root_password | password_hash('sha512') }}"
 
               - name: Install Tailscale
                 shell: |
@@ -188,58 +94,23 @@ jobs:
 
               - name: Start Tailscale
                 shell: |
-                  tailscale up --authkey={{ hostvars['your-proxmox-host']['tailscale_auth_key'] }} --hostname=rdp-vm-{{ inventory_hostname }}
+                  tailscale up --authkey={{ tailscale_auth_key }} --hostname=proxmox-host
                 become: yes
                 register: tailscale_up
                 retries: 3
                 delay: 10
                 until: tailscale_up.rc == 0
 
-              - name: Create systemd service for continuous RDP monitoring
-                copy:
-                  dest: /etc/systemd/system/rdp-monitor.service
-                  content: |
-                    [Unit]
-                    Description=RDP Monitor Service
-                    After=network.target tailscaled.service
-
-                    [Service]
-                    ExecStart=/bin/bash -c 'while true; do echo "[$(date)] RDP Active on {{ inventory_hostname }}"; sleep 300; done'
-                    Restart=always
-                    RestartSec=5
-                    User={{ hostvars['your-proxmox-host']['rdp_user'] }}
-
-                    [Install]
-                    WantedBy=multi-user.target
-
               - name: Enable Tailscale to start on boot
                 systemd:
                   name: tailscaled
                   enabled: yes
-
-              - name: Enable and start RDP monitor service
-                systemd:
-                  name: rdp-monitor
-                  enabled: yes
-                  state: started
-
-              - name: Enable and start xrdp
-                systemd:
-                  name: xrdp
-                  enabled: yes
-                  state: started
 
               - name: Enable SSH
                 systemd:
                   name: ssh
                   enabled: yes
                   state: started
-
-            handlers:
-              - name: restart xrdp
-                systemd:
-                  name: xrdp
-                  state: restarted
           EOF
         env:
           ANSIBLE_HOST_KEY_CHECKING: false
